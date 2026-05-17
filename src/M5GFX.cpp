@@ -2110,7 +2110,15 @@ The usage of each pin is as follows.
                 auto p = new Panel_ILI9881C();
                 _panel_last.reset(p);
                 auto det = p->config_detail();
-                det.dpi_freq_mhz = 80;
+                // Tab5 fork patch (Kuruma-Logger): 80 -> 60 MHz to widen the
+                // DPI-vs-PSRAM bandwidth margin. ESP32-P4's DSI bridge emits
+                // default cyan/blue pixels on underrun (esp_lcd_panel_dpi.c
+                // line 90-94 documents this). At 80 MHz the bridge sustained
+                // read demand (~160 MB/s) leaves <40 MB/s headroom against
+                // 200 MB/s shared PSRAM bus, and any Wi-Fi/CAN/snprintf burst
+                // triggers a one-frame underrun visible as a full-screen cyan
+                // flash at irregular 1Hz cadence. 60 MHz halves the deficit.
+                det.dpi_freq_mhz = 60;
                 det.hsync_back_porch = 140;
                 det.hsync_pulse_width = 40;
                 det.hsync_front_porch = 40;
@@ -2124,7 +2132,8 @@ The usage of each pin is as follows.
                 _panel_last.reset(p);
                 auto det = p->config_detail();
 
-                det.dpi_freq_mhz = 80;
+                // Tab5 fork patch (Kuruma-Logger): see ILI9881C comment above.
+                det.dpi_freq_mhz = 60;
                 det.hsync_back_porch = 40;
                 det.hsync_pulse_width = 2;
                 det.hsync_front_porch = 40;

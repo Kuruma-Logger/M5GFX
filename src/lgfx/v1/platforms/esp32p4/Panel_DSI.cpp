@@ -24,6 +24,8 @@ Contributors:
 
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_panel_io.h>
+#include <esp_cache.h>
+#include <esp_heap_caps.h>
 #include <cstring>
 #include <algorithm>
 
@@ -180,25 +182,31 @@ namespace lgfx
   void Panel_DSI::blitFromBuffer(const void* src)
   {
     if (_disp_panel_handle == nullptr || src == nullptr) return;
+
+    // Flush CPU L1/L2 cache → PSRAM for the sprite region. The GUI just
+    // wrote into the sprite via CPU stores, which sit in cache until
+    // hardware writeback. DMA2D reads PSRAM directly (not through cache),
+    // so without an explicit msync it would copy stale / random bytes,
+    // producing TV-snow output. The dest fb does not need msync because
+    // the DPI driver fences its own DMA reads against the DMA2D copy
+    // completion internally.
+    const size_t bpp = static_cast<size_t>(_write_bits) >> 3;
+    const size_t size =
+        static_cast<size_t>(_cfg.panel_width) *
+        static_cast<size_t>(_cfg.panel_height) * bpp;
+    if (size != 0) {
+      esp_cache_msync(const_cast<void*>(src), size,
+                      ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                      ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+    }
+
     // esp_lcd_panel_draw_bitmap on a DPI panel with a buffer that is NOT
     // one of the pre-allocated framebuffers triggers a DMA2D-accelerated
     // copy from `src` into the current draw framebuffer, then schedules a
-    // buffer flip on the next VSync. Atomic from the panel's perspective.
-    // See esp_lcd_panel_dpi.c::dpi_panel_draw_bitmap.
+    // buffer flip on the next VSync. The DPI driver manages cur_fb_index
+    // internally; the caller (in sprite mode) does not touch _lines_buffer.
     esp_lcd_panel_draw_bitmap(_disp_panel_handle, 0, 0,
                               _cfg.panel_width, _cfg.panel_height, src);
-    // Mirror swapFrameBuffer's bookkeeping so the user GFX code sees the
-    // buffers in the same state as the legacy swap path: the DMA2D copy
-    // wrote into _config_detail.buffer (current draw), DPI will scan from
-    // it; swap so future direct writes go to the other side.
-    std::swap(_config_detail.buffer, _config_detail.buffer_back);
-    auto ptr = (uint8_t*)_config_detail.buffer;
-    const size_t line_length = ((_cfg.panel_width * _write_bits >> 3) + 3) & ~3;
-    const auto height = _cfg.panel_height;
-    for (int y = 0; y < height; y++) {
-      _lines_buffer[y] = ptr;
-      ptr += line_length;
-    }
   }
 
   void* Panel_DSI::swapFrameBuffer(void)

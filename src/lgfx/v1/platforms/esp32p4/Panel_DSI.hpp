@@ -23,6 +23,8 @@ Contributors:
 
 #include <esp_lcd_mipi_dsi.h>
 #include <esp_ldo_regulator.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include "../../panel/Panel_FrameBufferBase.hpp"
 
@@ -120,6 +122,16 @@ namespace lgfx
     config_detail_t _config_detail;
 
     esp_lcd_panel_handle_t _disp_panel_handle = nullptr;
+
+    /// Kuruma-Logger fork: gates back-to-back blitFromBuffer calls until the
+    /// DMA2D copy from the previous frame has completed. The IDF DPI driver
+    /// returns ESP_ERR_INVALID_STATE if its internal draw_sem is still held;
+    /// without our own wait, fast-cadence blits silently drop and the FB
+    /// shows torn / mixed content.
+    SemaphoreHandle_t _trans_done_sem = nullptr;
+    static bool IRAM_ATTR onTransDoneIsr(esp_lcd_panel_handle_t panel,
+                                         esp_lcd_dpi_panel_event_data_t* edata,
+                                         void* user_ctx);
   };
 
 //----------------------------------------------------------------------------

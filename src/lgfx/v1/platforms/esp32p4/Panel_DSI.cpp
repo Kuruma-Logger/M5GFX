@@ -117,6 +117,21 @@ namespace lgfx
         esp_lcd_dpi_panel_get_frame_buffer(_disp_panel_handle, 2, &fb0, &fb1);
         _config_detail.buffer = fb0;
         _config_detail.buffer_back = fb1;
+
+        // Kuruma-Logger fork: register on_color_trans_done callback so
+        // blitFromBuffer can wait for DMA2D copy completion before queuing
+        // the next one. Without this, fast-cadence blits silently fail
+        // (esp_lcd_panel_dpi.c:530-531 returns ESP_ERR_INVALID_STATE if
+        // the internal draw_sem isn't free) and the FB ends up with
+        // torn / random content (TV-snow).
+        _trans_done_sem = xSemaphoreCreateBinary();
+        if (_trans_done_sem) {
+            xSemaphoreGive(_trans_done_sem); // initial state: ready
+            esp_lcd_dpi_panel_event_callbacks_t cbs = {};
+            cbs.on_color_trans_done = &Panel_DSI::onTransDoneIsr;
+            esp_lcd_dpi_panel_register_event_callbacks(_disp_panel_handle,
+                                                       &cbs, this);
+        }
     }
 
     auto ptr = (uint8_t*)_config_detail.buffer;
@@ -179,32 +194,36 @@ namespace lgfx
     write_params(flg_idle ? CMD_IDMON : CMD_IDMOFF);
   }
 
+  bool IRAM_ATTR Panel_DSI::onTransDoneIsr(esp_lcd_panel_handle_t /*panel*/,
+                                            esp_lcd_dpi_panel_event_data_t* /*edata*/,
+                                            void* user_ctx)
+  {
+    auto* self = static_cast<Panel_DSI*>(user_ctx);
+    if (!self || !self->_trans_done_sem) return false;
+    BaseType_t hpw = pdFALSE;
+    xSemaphoreGiveFromISR(self->_trans_done_sem, &hpw);
+    return hpw == pdTRUE;
+  }
+
   void Panel_DSI::blitFromBuffer(const void* src)
   {
     if (_disp_panel_handle == nullptr || src == nullptr) return;
 
-    // Flush CPU L1/L2 cache → PSRAM for the sprite region. The GUI just
-    // wrote into the sprite via CPU stores, which sit in cache until
-    // hardware writeback. DMA2D reads PSRAM directly (not through cache),
-    // so without an explicit msync it would copy stale / random bytes,
-    // producing TV-snow output. The dest fb does not need msync because
-    // the DPI driver fences its own DMA reads against the DMA2D copy
-    // completion internally.
-    const size_t bpp = static_cast<size_t>(_write_bits) >> 3;
-    const size_t size =
-        static_cast<size_t>(_cfg.panel_width) *
-        static_cast<size_t>(_cfg.panel_height) * bpp;
-    if (size != 0) {
-      esp_cache_msync(const_cast<void*>(src), size,
-                      ESP_CACHE_MSYNC_FLAG_DIR_C2M |
-                      ESP_CACHE_MSYNC_FLAG_TYPE_DATA);
+    // Wait for the previous DMA2D copy to complete. The IDF DPI driver's
+    // dpi_panel_draw_bitmap (esp_lcd_panel_dpi.c:530-531) silently fails
+    // with ESP_ERR_INVALID_STATE if its internal draw_sem is still held
+    // — back-to-back calls at 30 Hz would then drop most frames and the
+    // FB ends up with mixed / torn content (the "TV-snow" symptom).
+    // _trans_done_sem is given by onTransDoneIsr when the previous copy
+    // finished; pre-seeded as available at init so the first frame is
+    // not blocked.
+    if (_trans_done_sem) {
+      xSemaphoreTake(_trans_done_sem, pdMS_TO_TICKS(50));
     }
 
-    // esp_lcd_panel_draw_bitmap on a DPI panel with a buffer that is NOT
-    // one of the pre-allocated framebuffers triggers a DMA2D-accelerated
-    // copy from `src` into the current draw framebuffer, then schedules a
-    // buffer flip on the next VSync. The DPI driver manages cur_fb_index
-    // internally; the caller (in sprite mode) does not touch _lines_buffer.
+    // esp_lcd_panel_draw_bitmap performs its own esp_cache_msync(C2M) on
+    // the src buffer internally (esp_lcd_panel_dpi.c:536), so we do NOT
+    // need a redundant msync here.
     esp_lcd_panel_draw_bitmap(_disp_panel_handle, 0, 0,
                               _cfg.panel_width, _cfg.panel_height, src);
   }

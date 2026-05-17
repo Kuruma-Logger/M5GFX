@@ -177,6 +177,30 @@ namespace lgfx
     write_params(flg_idle ? CMD_IDMON : CMD_IDMOFF);
   }
 
+  void Panel_DSI::blitFromBuffer(const void* src)
+  {
+    if (_disp_panel_handle == nullptr || src == nullptr) return;
+    // esp_lcd_panel_draw_bitmap on a DPI panel with a buffer that is NOT
+    // one of the pre-allocated framebuffers triggers a DMA2D-accelerated
+    // copy from `src` into the current draw framebuffer, then schedules a
+    // buffer flip on the next VSync. Atomic from the panel's perspective.
+    // See esp_lcd_panel_dpi.c::dpi_panel_draw_bitmap.
+    esp_lcd_panel_draw_bitmap(_disp_panel_handle, 0, 0,
+                              _cfg.panel_width, _cfg.panel_height, src);
+    // Mirror swapFrameBuffer's bookkeeping so the user GFX code sees the
+    // buffers in the same state as the legacy swap path: the DMA2D copy
+    // wrote into _config_detail.buffer (current draw), DPI will scan from
+    // it; swap so future direct writes go to the other side.
+    std::swap(_config_detail.buffer, _config_detail.buffer_back);
+    auto ptr = (uint8_t*)_config_detail.buffer;
+    const size_t line_length = ((_cfg.panel_width * _write_bits >> 3) + 3) & ~3;
+    const auto height = _cfg.panel_height;
+    for (int y = 0; y < height; y++) {
+      _lines_buffer[y] = ptr;
+      ptr += line_length;
+    }
+  }
+
   void* Panel_DSI::swapFrameBuffer(void)
   {
     if (_config_detail.buffer_back == nullptr) {

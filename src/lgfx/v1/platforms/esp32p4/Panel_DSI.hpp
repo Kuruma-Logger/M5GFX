@@ -63,6 +63,21 @@ namespace lgfx
     /// Returns the pointer to the NEW draw buffer.
     void* swapFrameBuffer(void);
 
+    /// Kuruma-Logger fork addition (Tab5 atomic frame mode):
+    /// Copy an external RGB565 buffer into the current draw framebuffer
+    /// using esp_lcd_panel_draw_bitmap. The DPI driver routes this through
+    /// DMA2D (configured via use_dma2d=true at init), so the copy runs on
+    /// hardware and does not consume CPU. After the copy, the DPI controller
+    /// flips to the just-written buffer at the next VSync, presenting the
+    /// frame atomically.
+    ///
+    /// `src` must point to panel_width * panel_height * bytes_per_pixel bytes
+    /// of pixel data in PSRAM, RGB565 format, contiguous.
+    ///
+    /// This replaces the pushSprite + swapFrameBuffer pattern that doubled
+    /// PSRAM bus pressure during per-pixel CPU memcpy.
+    void blitFromBuffer(const void* src);
+
     /// True when num_fbs >= 2 and both buffers were allocated.
     bool hasDoubleBuffer(void) const { return _config_detail.buffer_back != nullptr; }
 

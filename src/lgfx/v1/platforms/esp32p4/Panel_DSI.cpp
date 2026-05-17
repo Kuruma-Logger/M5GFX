@@ -26,6 +26,8 @@ Contributors:
 #include <esp_lcd_panel_io.h>
 #include <esp_cache.h>
 #include <esp_heap_caps.h>
+#include <esp_log.h>
+#include <esp_rom_sys.h>
 #include <cstring>
 #include <algorithm>
 
@@ -208,24 +210,35 @@ namespace lgfx
   void Panel_DSI::blitFromBuffer(const void* src)
   {
     if (_disp_panel_handle == nullptr || src == nullptr) return;
+    void* dst = _config_detail.buffer;
+    if (dst == nullptr) return;
 
-    // Wait for the previous DMA2D copy to complete. The IDF DPI driver's
-    // dpi_panel_draw_bitmap (esp_lcd_panel_dpi.c:530-531) silently fails
-    // with ESP_ERR_INVALID_STATE if its internal draw_sem is still held
-    // — back-to-back calls at 30 Hz would then drop most frames and the
-    // FB ends up with mixed / torn content (the "TV-snow" symptom).
-    // _trans_done_sem is given by onTransDoneIsr when the previous copy
-    // finished; pre-seeded as available at init so the first frame is
-    // not blocked.
-    if (_trans_done_sem) {
-      xSemaphoreTake(_trans_done_sem, pdMS_TO_TICKS(50));
-    }
+    // CRITICAL: esp_lcd_panel_draw_bitmap with a non-fb src copies into
+    // fbs[cur_fb_index] — the framebuffer the DPI controller is CURRENTLY
+    // SCANNING (esp_lcd_panel_dpi.c:466). That collides with the live scan
+    // and shows as TV-snow / heavy tearing. So we cannot route the
+    // external sprite through draw_bitmap. Instead: copy into the GUI-
+    // side back fb (`_config_detail.buffer`, the one _lines_buffer points
+    // into; DPI is NOT scanning it), then swapFrameBuffer to flip.
+    const size_t bpp = static_cast<size_t>(_write_bits) >> 3;
+    const size_t size =
+        static_cast<size_t>(_cfg.panel_width) *
+        static_cast<size_t>(_cfg.panel_height) * bpp;
+    if (size == 0) return;
 
-    // esp_lcd_panel_draw_bitmap performs its own esp_cache_msync(C2M) on
-    // the src buffer internally (esp_lcd_panel_dpi.c:536), so we do NOT
-    // need a redundant msync here.
-    esp_lcd_panel_draw_bitmap(_disp_panel_handle, 0, 0,
-                              _cfg.panel_width, _cfg.panel_height, src);
+    std::memcpy(dst, src, size);
+
+    // Cache writeback (CPU → PSRAM) before the DPI controller reads via
+    // its own DMA. swapFrameBuffer's draw_bitmap path also msyncs, but
+    // doing it here keeps the wait shorter.
+    esp_cache_msync(dst, size,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M |
+                    ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+
+    // Tell the DPI controller to scan this buffer; std::swap so the next
+    // memcpy goes to the now-free other fb. The cache-msync done above
+    // makes the no-copy path in dpi_panel_draw_bitmap a near-noop.
+    swapFrameBuffer();
   }
 
   void* Panel_DSI::swapFrameBuffer(void)

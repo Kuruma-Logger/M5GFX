@@ -2619,6 +2619,7 @@ The usage of each pin is as follows.
                 det.vsync_back_porch = 20;
                 det.vsync_pulse_width = 4;
                 det.vsync_front_porch = 20;
+                det.framebuffer_count = 3;
                 p->config_detail(det);
               } else if (hit_st7123) {
                 _touch_last.reset(new Touch_ST7123());
@@ -2635,6 +2636,7 @@ The usage of each pin is as follows.
                 det.vsync_pulse_width = 2;
                 // note: reducing the front porch will cause the touch panel to stop working.
                 det.vsync_front_porch = 220;
+                det.framebuffer_count = 3;
                 p->config_detail(det);
               }
               {

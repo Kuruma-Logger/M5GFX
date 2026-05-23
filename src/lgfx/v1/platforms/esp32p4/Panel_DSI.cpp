@@ -33,6 +33,16 @@ namespace lgfx
  inline namespace v1
  {
 //----------------------------------------------------------------------------
+  namespace
+  {
+    uint8_t clamp_framebuffer_count(uint8_t count)
+    {
+      if (count < 1) { return 1; }
+      if (count > 3) { return 3; }
+      return count;
+    }
+  }
+
   bool Panel_DSI::init_panel(void)
   {
     auto bus = getBusDSI();
@@ -82,7 +92,7 @@ namespace lgfx
   #else
     dpi_config.pixel_format = LCD_COLOR_PIXEL_FORMAT_RGB565;
   #endif
-    dpi_config.num_fbs = 1;
+    dpi_config.num_fbs = clamp_framebuffer_count(_config_detail.framebuffer_count);
     dpi_config.video_timing.h_size = _cfg.panel_width;
     dpi_config.video_timing.v_size = _cfg.panel_height;
     dpi_config.video_timing.hsync_back_porch  = _config_detail.hsync_back_porch;
@@ -124,7 +134,23 @@ namespace lgfx
     if (bus == nullptr) { return false; }
     if (init_dpi(bus) && init_panel())
     {
-        esp_lcd_dpi_panel_get_frame_buffer(_disp_panel_handle, 1, &(_config_detail.buffer));
+      _config_detail.buffer_count = clamp_framebuffer_count(_config_detail.framebuffer_count);
+      _config_detail.buffer = nullptr;
+      memset(_config_detail.buffers, 0, sizeof(_config_detail.buffers));
+      switch (_config_detail.buffer_count)
+      {
+      default:
+      case 1:
+        esp_lcd_dpi_panel_get_frame_buffer(_disp_panel_handle, 1, &(_config_detail.buffers[0]));
+        break;
+      case 2:
+        esp_lcd_dpi_panel_get_frame_buffer(_disp_panel_handle, 2, &(_config_detail.buffers[0]), &(_config_detail.buffers[1]));
+        break;
+      case 3:
+        esp_lcd_dpi_panel_get_frame_buffer(_disp_panel_handle, 3, &(_config_detail.buffers[0]), &(_config_detail.buffers[1]), &(_config_detail.buffers[2]));
+        break;
+      }
+      _config_detail.buffer = _config_detail.buffers[0];
     }
 
     auto ptr = (uint8_t*)_config_detail.buffer;
@@ -144,6 +170,7 @@ namespace lgfx
     memset(lineArray, 0, la_size);
 
     const size_t line_length = ((_cfg.panel_width * _write_bits >> 3) + 3) & ~3;
+    _config_detail.buffer_length = line_length * height;
 
     _lines_buffer = lineArray;
 
@@ -157,6 +184,21 @@ namespace lgfx
   }
 
 //----------------------------------------------------------------------------
+
+  bool Panel_DSI::presentFramebuffer(size_t index)
+  {
+    return presentFramebuffer(index, 0, 0, _cfg.panel_width, _cfg.panel_height);
+  }
+
+  bool Panel_DSI::presentFramebuffer(size_t index, uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h)
+  {
+    auto buffer = framebuffer(index);
+    if (_disp_panel_handle == nullptr || buffer == nullptr || w == 0 || h == 0) { return false; }
+    if (x >= _cfg.panel_width || y >= _cfg.panel_height) { return false; }
+    if (x + w > _cfg.panel_width) { w = _cfg.panel_width - x; }
+    if (y + h > _cfg.panel_height) { h = _cfg.panel_height - y; }
+    return ESP_OK == esp_lcd_panel_draw_bitmap(_disp_panel_handle, x, y, x + w, y + h, buffer);
+  }
 
   bool Panel_DSI::write_params(uint32_t cmd, const uint8_t* data, size_t length)
   {

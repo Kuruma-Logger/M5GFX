@@ -42,6 +42,9 @@ namespace lgfx
     struct config_detail_t
     {
       void* buffer = nullptr;
+      void* buffers[3] = {};
+      uint8_t framebuffer_count = 1;
+      uint8_t buffer_count = 0;
       uint32_t buffer_length = 0;
 
       uint16_t dpi_freq_mhz = 60;
@@ -59,6 +62,15 @@ namespace lgfx
 
     const config_detail_t& config_detail(void) const { return _config_detail; }
     void config_detail(const config_detail_t& config_detail) { _config_detail = config_detail; };
+
+    size_t framebufferCount(void) const { return _config_detail.buffer_count; }
+    void* framebuffer(size_t index) const
+    {
+      return index < _config_detail.buffer_count ? _config_detail.buffers[index] : nullptr;
+    }
+    size_t framebufferSize(void) const { return _config_detail.buffer_length; }
+    bool presentFramebuffer(size_t index);
+    bool presentFramebuffer(size_t index, uint_fast16_t x, uint_fast16_t y, uint_fast16_t w, uint_fast16_t h);
 
     void setInvert(bool invert) override;
     void setSleep(bool flg_sleep) override;
